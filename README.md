@@ -1,10 +1,12 @@
-# DVB-I SecurityPolicy Generator (`cert_fingerprints.php`)
+# DVB-I SecurityPolicy Generator (`dvbi_securitypolicy.php`)
 
 A single-file PHP script that asks for a URL or hostname, connects to it over TLS, and reports the fingerprints of every certificate the server presents (the leaf certificate plus any intermediates).
 
 It also generates a complete `SignaturePolicy` XML element, including its `TrustAnchor` and `SubjectConstraint`, that follows the syntax and semantics of **DVB A177r8, clause 7.6.2** (draft ETSI TS 103 770 V1.3.1).
 
 It runs from the command line or on a web server.
+
+`cert_fingerprints.php` is kept for backward compatibility. It loads `dvbi_securitypolicy.php`, so existing URLs and scripts keep working as long as both files are in the same directory.
 
 ## Features
 
@@ -39,7 +41,7 @@ php -m | grep -i openssl
 Interactive prompt:
 
 ```bash
-php cert_fingerprints.php
+php dvbi_securitypolicy.php
 ```
 
 ```
@@ -49,21 +51,21 @@ Enter a URL or hostname: example.com
 Or pass the host as an argument:
 
 ```bash
-php cert_fingerprints.php https://example.com:8443
+php dvbi_securitypolicy.php https://example.com:8443
 ```
 
 Options for the generated `SignaturePolicy`:
 
 ```bash
-php cert_fingerprints.php example.com --anchor=root     # root-most CA only
-php cert_fingerprints.php example.com --anchor=issuer   # issuing CA only
-php cert_fingerprints.php example.com --anchor=all      # every CA in the chain (default)
+php dvbi_securitypolicy.php example.com --anchor=root     # root-most CA only
+php dvbi_securitypolicy.php example.com --anchor=issuer   # issuing CA only
+php dvbi_securitypolicy.php example.com --anchor=all      # every CA in the chain (default)
 
-php cert_fingerprints.php example.com --enforcement=warn            # required (default) | warn | vendor
-php cert_fingerprints.php example.com --policy-id=urn:acme:policy:1 # the policyId attribute
+php dvbi_securitypolicy.php example.com --enforcement=warn            # required (default) | warn | vendor
+php dvbi_securitypolicy.php example.com --policy-id=urn:acme:policy:1 # the policyId attribute
 
-php cert_fingerprints.php example.com --algorithms=sha-256,sha3-256  # choose fingerprint algorithms
-php cert_fingerprints.php example.com --algorithms=all              # every supported algorithm
+php dvbi_securitypolicy.php example.com --algorithms=sha-256,sha3-256  # choose fingerprint algorithms
+php dvbi_securitypolicy.php example.com --algorithms=all              # every supported algorithm
 ```
 
 If `--algorithms` is omitted, `sha-1`, `sha-256`, `sha-512` and `sm3` are used. Names are the `@algorithm` values (case-insensitive, comma-separated): `sha-1`, `sha-224`, `sha-256`, `sha-384`, `sha-512`, `sha-512/224`, `sha-512/256`, `sha3-224`, `sha3-256`, `sha3-384`, `sha3-512`, `sm3`, or `all`. An unknown name is an error; a known name your OpenSSL build does not support is skipped with a note.
@@ -72,14 +74,14 @@ If `--policy-id` is omitted, the placeholder `urn:example:signature-policy:<host
 
 ### Web server
 
-1. Upload `cert_fingerprints.php` to any PHP-enabled web server.
+1. Upload `dvbi_securitypolicy.php` to any PHP-enabled web server.
 2. Open it in a browser.
 3. Enter a URL or hostname, tick the fingerprint algorithms you want (SHA-1, SHA-256, SHA-512 and SM3 are ticked by default; any your OpenSSL build lacks are greyed out), and click **Look up**.
 
 For a quick local test without a web server:
 
 ```bash
-php -S localhost:8000 cert_fingerprints.php
+php -S localhost:8000 dvbi_securitypolicy.php
 ```
 
 Then visit <http://localhost:8000>.
