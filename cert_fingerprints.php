@@ -22,6 +22,9 @@ declare(strict_types=1);
  *
  * Requires PHP 8.0+ with the OpenSSL extension.
  *
+ * SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2026, paulhiggs. See the LICENSE file.
+ *
  * Written by Claude (Anthropic), November 2026, in collaboration with the
  * requesting user. The SignaturePolicy output was written against the June 2026
  * draft of DVB A177r8 and has not been checked against the final standard.

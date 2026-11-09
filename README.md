@@ -240,6 +240,10 @@ CLI mode applies none of these restrictions, since it runs as you.
 | `...resolves to a private or reserved address` | Intentional SSRF protection; see Configuration |
 | Works locally but not on shared hosting | The host may block outbound connections |
 
+## License
+
+Released under the [BSD 3-Clause License](LICENSE). Copyright (c) 2026, paulhiggs.
+
 ## Credits
 
 Written by Claude (Anthropic) in collaboration with the requesting user, November 2026. The `SignaturePolicy` output was built from clause 7.6.2 of the DVB A177r8 draft (June 2026) and has not been tested against a DVB-I client or the final published standard.
