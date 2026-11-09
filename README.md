@@ -9,7 +9,7 @@ It runs from the command line or on a web server.
 ## Features
 
 - Accepts a bare hostname (`example.com`), a full URL (`https://example.com/path`), or a host with a port (`example.com:8443`)
-- Shows the fingerprints of every certificate in the chain for all supported algorithms (SHA-1, SHA-2, SHA-3 and SM3 families) in `AA:BB:CC:…` format
+- Shows the fingerprints of every certificate in the chain in `AA:BB:CC:…` format, for the algorithms you choose from the SHA-1, SHA-2, SHA-3 and SM3 families (SHA-1, SHA-256, SHA-512 and SM3 by default)
 - Shows subject, issuer, and validity dates for each certificate
 - Works even with expired, self-signed, or hostname-mismatched certificates (verification is deliberately disabled so you can still inspect them)
 - Sends SNI, so hosts serving multiple sites return the correct certificate
@@ -60,7 +60,12 @@ php cert_fingerprints.php example.com --anchor=all      # every CA in the chain 
 
 php cert_fingerprints.php example.com --enforcement=warn            # required (default) | warn | vendor
 php cert_fingerprints.php example.com --policy-id=urn:acme:policy:1 # the policyId attribute
+
+php cert_fingerprints.php example.com --algorithms=sha-256,sha3-256  # choose fingerprint algorithms
+php cert_fingerprints.php example.com --algorithms=all              # every supported algorithm
 ```
+
+If `--algorithms` is omitted, `sha-1`, `sha-256`, `sha-512` and `sm3` are used. Names are the `@algorithm` values (case-insensitive, comma-separated): `sha-1`, `sha-224`, `sha-256`, `sha-384`, `sha-512`, `sha-512/224`, `sha-512/256`, `sha3-224`, `sha3-256`, `sha3-384`, `sha3-512`, `sm3`, or `all`. An unknown name is an error; a known name your OpenSSL build does not support is skipped with a note.
 
 If `--policy-id` is omitted, the placeholder `urn:example:signature-policy:<host>` is used. Replace it with an identifier you own.
 
@@ -68,7 +73,7 @@ If `--policy-id` is omitted, the placeholder `urn:example:signature-policy:<host
 
 1. Upload `cert_fingerprints.php` to any PHP-enabled web server.
 2. Open it in a browser.
-3. Enter a URL or hostname and click **Look up**.
+3. Enter a URL or hostname, tick the fingerprint algorithms you want (SHA-1, SHA-256, SHA-512 and SM3 are ticked by default; any your OpenSSL build lacks are greyed out), and click **Look up**.
 
 For a quick local test without a web server:
 
@@ -89,11 +94,9 @@ Certificates presented by example.com:443 (2)
     Valid:      2026-01-01 00:00:00 UTC  ->  2026-04-01 23:59:59 UTC
     Fingerprints:
       sha-1:        12:34:56:...
-      sha-224:      23:45:67:...
       sha-256:      AB:CD:EF:...
-      sha-384:      34:56:78:...
       sha-512:      45:67:89:...
-      (... sha-512/224, sha-512/256, sha3-224, sha3-256, sha3-384, sha3-512, sm3)
+      sm3:          56:78:9A:...
 
 [1] (chain) Example Intermediate CA
     Issuer:     Example Root CA
@@ -101,10 +104,11 @@ Certificates presented by example.com:443 (2)
     Fingerprints:
       sha-1:        9A:BC:DE:...
       sha-256:      01:23:45:...
-      (... and the same set of algorithms as above)
+      sha-512:      BC:DE:F0:...
+      sm3:          CD:EF:01:...
 ```
 
-(Values above are illustrative, and the list is abbreviated. Every certificate, including the leaf, shows all fingerprints that your PHP/OpenSSL build supports, and the `SignaturePolicy` element follows after the last certificate.)
+(Values above are illustrative. Every certificate, including the leaf, shows a fingerprint for each selected algorithm (the defaults are shown), and the `SignaturePolicy` element follows after the last certificate.)
 
 ## SignaturePolicy output (DVB A177r8 clause 7.6.2)
 
@@ -117,7 +121,8 @@ After the certificate list, the script prints a complete `SignaturePolicy` eleme
     <!-- Example Root CA -->
     <CAFingerprint algorithm="sha-1">9A:BC:DE:...</CAFingerprint>
     <CAFingerprint algorithm="sha-256">01:23:45:...</CAFingerprint>
-    <!-- ... sha-224, sha-384, sha-512, sha-512/224, sha-512/256, sha3-*, sm3 -->
+    <CAFingerprint algorithm="sha-512">BC:DE:F0:...</CAFingerprint>
+    <CAFingerprint algorithm="sm3">CD:EF:01:...</CAFingerprint>
   </TrustAnchor>
   <SubjectConstraint>
     <CN>example.com</CN> <!-- entered host; certificate subject CN; certificate subjectAltName -->
@@ -138,7 +143,7 @@ After the certificate list, the script prints a complete `SignaturePolicy` eleme
 | `TrustAnchor` contains one or more `CAFingerprint` elements (1 .. unbounded) | One `CAFingerprint` is written per selected CA certificate and algorithm |
 | `CAFingerprint`: the fingerprint of the Certificate Authority whose certificate must be present in the certificate chain | Only CA certificates are used: certificates with `basicConstraints CA:TRUE` that are not the server's leaf certificate, plus a self-signed leaf. The server's ordinary leaf certificate is never included |
 | `CAFingerprint` value pattern: hex byte pairs separated by colons (`HexDigit{2}(:HexDigit{2})*`) | Upper-case, colon-separated hex of the certificate's DER encoding, e.g. `AB:CD:EF:...` |
-| `@algorithm` (mandatory): the algorithm used to generate the fingerprint | One `CAFingerprint` per algorithm: `sha-1`, `sha-224`, `sha-256`, `sha-384`, `sha-512`, `sha-512/224`, `sha-512/256`, `sha3-224`, `sha3-256`, `sha3-384`, `sha3-512` and `sm3`. The specification does not enumerate `@algorithm` values; `sha-1`, `sha-256` and `sm3` are the names used in clause 7.5.2 and the others follow the same style |
+| `@algorithm` (mandatory): the algorithm used to generate the fingerprint | One `CAFingerprint` per selected algorithm (`--algorithms=` or the web checkboxes; default `sha-1`, `sha-256`, `sha-512`, `sm3`). Available: `sha-1`, `sha-224`, `sha-256`, `sha-384`, `sha-512`, `sha-512/224`, `sha-512/256`, `sha3-224`, `sha3-256`, `sha3-384`, `sha3-512` and `sm3`. The specification does not enumerate `@algorithm` values; `sha-1`, `sha-256` and `sm3` are the names used in clause 7.5.2 and the others follow the same style |
 | `SubjectConstraint` (optional, 0 .. 1) with `CN` (1 .. unbounded): the common name, optionally wildcarded, of a host endpoint that may provide the final document or data after any request or DNS redirection | One `CN` per associated hostname (see below). Omitted only if no hostname can be determined, for example an IP address with no names in its certificate |
 | Element namespace | `urn:dvb:metadata:servicediscovery-types:2026`, declared once on `SignaturePolicy` and inherited by its children. The elements are declared in the dvbi-types schema (annex A.3), where `elementFormDefault="qualified"`, so they are namespace-qualified |
 
@@ -184,7 +189,8 @@ Settings are constants at the top of the script.
 | `WEB_ALLOWED_PORTS` | `[443, 465, 636, 853, 993, 995, 8443]` | Web | Ports visitors may query. Use `[]` to allow any port |
 | `WEB_COOLDOWN_SECONDS` | `3` | Web | Minimum seconds between lookups per visitor session |
 | `CONNECT_TIMEOUT` | `8` | Both | Connection timeout in seconds |
-| `TRUST_ANCHOR_ALGORITHMS` | SHA-1, SHA-2 family, SHA-3 family, SM3 | Both | Map of `@algorithm` value to PHP/OpenSSL digest name. A `CAFingerprint` is written for each supported entry. Add or remove entries to change the set |
+| `TRUST_ANCHOR_ALGORITHMS` | SHA-1, SHA-2 family, SHA-3 family, SM3 | Both | Map of `@algorithm` value to PHP/OpenSSL digest name. These are the algorithms users can choose from; unsupported entries are skipped. Add or remove entries to change the set |
+| `DEFAULT_ALGORITHMS` | `sha-1`, `sha-256`, `sha-512`, `sm3` | Both | Algorithms selected when the user makes no choice |
 | `DEFAULT_ENFORCEMENT` | `required` | Both | Default value of `Enforcement` |
 | `DEFAULT_POLICY_ID_PREFIX` | `urn:example:signature-policy:` | Both | Prefix of the placeholder `policyId` used when none is given |
 | `HOSTNAMES_FROM_CNAME` | `true` | Both | Add the DNS alias (CNAME) chain to `SubjectConstraint` |

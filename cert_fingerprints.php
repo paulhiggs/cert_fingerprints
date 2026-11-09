@@ -17,6 +17,8 @@ declare(strict_types=1);
  * Works two ways:
  *   CLI:  php cert_fingerprints.php [host] [--anchor=all|root|issuer]
  *             [--enforcement=required|warn|vendor] [--policy-id=URI]
+ *             [--algorithms=sha-1,sha-256,...|all]
+ *         (default algorithms: sha-1, sha-256, sha-512, sm3)
  *         (prompts if no host given)
  *   Web:  upload to any PHP web server and open it in a browser.
  *
@@ -45,8 +47,8 @@ const WEB_COOLDOWN_SECONDS = 3;
 // Connection timeout in seconds.
 const CONNECT_TIMEOUT = 8;
 
-// DVB A177r8 clause 7.6.2: a CAFingerprint is written for every digest below,
-// each with its mandatory @algorithm attribute. The spec does not enumerate
+// DVB A177r8 clause 7.6.2: a CAFingerprint is written for each selected digest
+// below (see DEFAULT_ALGORITHMS), each with its mandatory @algorithm attribute. The spec does not enumerate
 // @algorithm values; sha-1, sha-256 and sm3 are the names used in clause 7.5.2
 // and the rest follow the same lower-case, hyphenated style. The right-hand
 // side is the name PHP/OpenSSL uses. Any algorithm the local OpenSSL build
@@ -65,6 +67,10 @@ const TRUST_ANCHOR_ALGORITHMS = [
     'sha3-512'    => 'sha3-512',
     'sm3'         => 'sm3',
 ];
+
+// Algorithms selected when the user makes no choice (CLI --algorithms, or the
+// web form on first load). Keys of TRUST_ANCHOR_ALGORITHMS.
+const DEFAULT_ALGORITHMS = ['sha-1', 'sha-256', 'sha-512', 'sm3'];
 
 // SignaturePolicy defaults (clause 7.6.2). The generated default policyId is a
 // placeholder URN: replace it with an identifier you own.
@@ -185,21 +191,59 @@ function colonHex(string $hex): string
     return implode(':', str_split(strtoupper($hex), 2));
 }
 
-/**
- * Fingerprints of one certificate for every algorithm in
- * TRUST_ANCHOR_ALGORITHMS that this PHP/OpenSSL build supports.
- * Returns [@algorithm value => 'AA:BB:...'].
- */
-function anchorFingerprints($cert): array
+/** True if this PHP/OpenSSL build supports the given @algorithm name. */
+function isAlgorithmSupported(string $name): bool
 {
     static $supported = null;
     $supported ??= array_map('strtolower', openssl_get_md_methods(true));
+    return isset(TRUST_ANCHOR_ALGORITHMS[$name])
+        && in_array(TRUST_ANCHOR_ALGORITHMS[$name], $supported, true);
+}
 
+/**
+ * Validate a user's algorithm selection. Accepts @algorithm names (any case);
+ * "all" selects every supported algorithm. Returns the names in the order of
+ * TRUST_ANCHOR_ALGORITHMS. Throws if a name is unknown or nothing usable is left.
+ */
+function selectAlgorithms(array $requested): array
+{
+    $requested = array_values(array_filter(array_map(
+        static fn($a): string => strtolower(trim((string)$a)),
+        $requested
+    ), 'strlen'));
+    if (in_array('all', $requested, true)) {
+        $requested = array_keys(TRUST_ANCHOR_ALGORITHMS);
+    }
+    $unknown = array_diff($requested, array_keys(TRUST_ANCHOR_ALGORITHMS));
+    if ($unknown) {
+        throw new InvalidArgumentException(
+            'Unknown algorithm(s): ' . implode(', ', $unknown) . '. Choose from: '
+            . implode(', ', array_keys(TRUST_ANCHOR_ALGORITHMS)) . ', or all.'
+        );
+    }
+    $chosen = array_values(array_filter(
+        array_keys(TRUST_ANCHOR_ALGORITHMS),
+        static fn(string $n): bool => in_array($n, $requested, true) && isAlgorithmSupported($n)
+    ));
+    if (!$chosen) {
+        throw new InvalidArgumentException('Select at least one fingerprint algorithm that this server supports.');
+    }
+    return $chosen;
+}
+
+/**
+ * Fingerprints of one certificate for each of the given @algorithm names
+ * (keys of TRUST_ANCHOR_ALGORITHMS) that this PHP/OpenSSL build supports.
+ * Returns [@algorithm value => 'AA:BB:...'].
+ */
+function anchorFingerprints($cert, array $algorithms): array
+{
     $out = [];
-    foreach (TRUST_ANCHOR_ALGORITHMS as $name => $phpName) {
-        if (!in_array($phpName, $supported, true)) {
+    foreach ($algorithms as $name) {
+        if (!isAlgorithmSupported($name)) {
             continue;
         }
+        $phpName = TRUST_ANCHOR_ALGORITHMS[$name];
         $hex = @openssl_x509_fingerprint($cert, $phpName);
         if (is_string($hex) && $hex !== '') {
             $out[$name] = colonHex($hex);
@@ -209,7 +253,7 @@ function anchorFingerprints($cert): array
 }
 
 /** Describe one certificate. */
-function describeCert($cert, int $index): array
+function describeCert($cert, int $index, array $algorithms): array
 {
     $info    = openssl_x509_parse($cert) ?: [];
     $subject = $info['subject']['CN'] ?? ($info['subject']['O'] ?? '(none)');
@@ -229,9 +273,7 @@ function describeCert($cert, int $index): array
         'issuer'     => (string)$issuer,
         'valid_from' => isset($info['validFrom_time_t']) ? gmdate('Y-m-d H:i:s \U\T\C', $info['validFrom_time_t']) : '?',
         'valid_to'   => isset($info['validTo_time_t'])   ? gmdate('Y-m-d H:i:s \U\T\C', $info['validTo_time_t'])   : '?',
-        'sha256'     => colonHex(openssl_x509_fingerprint($cert, 'sha256') ?: ''),
-        'anchor_fps' => anchorFingerprints($cert),
-        'sha1'       => colonHex(openssl_x509_fingerprint($cert, 'sha1') ?: ''),
+        'anchor_fps' => anchorFingerprints($cert, $algorithms),
     ];
 }
 
@@ -467,7 +509,7 @@ function buildSignaturePolicyXml(
 }
 
 /** Full lookup: returns [host, port, certs[], ip|null]. */
-function lookup(string $input, bool $restricted): array
+function lookup(string $input, bool $restricted, array $algorithms): array
 {
     [$host, $port] = parseTarget($input);
     $connectIp = null;
@@ -492,7 +534,7 @@ function lookup(string $input, bool $restricted): array
     $chain = fetchCertChain($host, $port, $connectIp);
     $certs = [];
     foreach ($chain as $i => $cert) {
-        $certs[] = describeCert($cert, $i);
+        $certs[] = describeCert($cert, $i, $algorithms);
     }
     return [$host, $port, $certs, $connectIp];
 }
@@ -512,8 +554,11 @@ if (PHP_SAPI === 'cli') {
     $anchor = 'all';
     $enforcement = DEFAULT_ENFORCEMENT;
     $policyIdArg = '';
+    $algorithmsArg = DEFAULT_ALGORITHMS;
     foreach (array_slice($argv, 1) as $arg) {
-        if (preg_match('/^--anchor=(all|root|issuer)$/', $arg, $m)) {
+        if (preg_match('/^--algorithms?=(.*)$/', $arg, $m)) {
+            $algorithmsArg = explode(',', $m[1]);
+        } elseif (preg_match('/^--anchor=(all|root|issuer)$/', $arg, $m)) {
             $anchor = $m[1];
         } elseif (preg_match('/^--enforcement=(required|warn|vendor)$/', $arg, $m)) {
             $enforcement = $m[1];
@@ -529,9 +574,10 @@ if (PHP_SAPI === 'cli') {
     }
 
     try {
+        $algorithms = selectAlgorithms($algorithmsArg);
         [$policyHost] = parseTarget($input);
         $policyId = resolvePolicyId($policyIdArg, $policyHost);
-        [$host, $port, $certs] = lookup($input, false);
+        [$host, $port, $certs] = lookup($input, false, $algorithms);
     } catch (Throwable $e) {
         fwrite(STDERR, 'Error: ' . $e->getMessage() . "\n");
         exit(1);
@@ -550,7 +596,12 @@ if (PHP_SAPI === 'cli') {
         }
     }
 
-    echo "\nSignaturePolicy (DVB A177r8 clause 7.6.2, --anchor=$anchor, --enforcement=$enforcement)\n";
+    $skipped = array_diff(array_map('strtolower', array_map('trim', $algorithmsArg)), $algorithms, ['all', '']);
+    if ($skipped) {
+        echo "\nNote: not supported by this OpenSSL build, skipped: " . implode(', ', $skipped) . "\n";
+    }
+
+    echo "\nSignaturePolicy (DVB A177r8 clause 7.6.2, --anchor=$anchor, --enforcement=$enforcement, --algorithms=" . implode(',', $algorithms) . ")\n";
     echo str_repeat('=', 60) . "\n";
     $policy = buildSignaturePolicyXml($certs, $anchor, $policyId, $enforcement, associatedHostnames($host, $certs[0]));
     if ($policy === null) {
@@ -590,6 +641,7 @@ $input  = '';
 $anchor = 'all';
 $enforcement = DEFAULT_ENFORCEMENT;
 $policyIdIn  = '';
+$algorithms  = array_values(array_filter(DEFAULT_ALGORITHMS, 'isAlgorithmSupported'));
 $error  = null;
 $result = null;
 $policyXml = null;
@@ -600,6 +652,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $enforcement = in_array($_POST['enforcement'] ?? '', SIGNATURE_POLICY_ENFORCEMENTS, true) ? $_POST['enforcement'] : DEFAULT_ENFORCEMENT;
     $policyIdIn  = trim((string)($_POST['policy_id'] ?? ''));
     $token  = (string)($_POST['csrf'] ?? '');
+    // Keep only known, supported names so the form re-renders the user's choice.
+    $algorithms = array_values(array_filter(
+        array_keys(TRUST_ANCHOR_ALGORITHMS),
+        static fn(string $n): bool => isAlgorithmSupported($n)
+            && in_array($n, array_map('strval', (array)($_POST['algorithms'] ?? [])), true)
+    ));
 
     if (!hash_equals($_SESSION['csrf'], $token)) {
         http_response_code(403);
@@ -611,9 +669,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $_SESSION['last_lookup'] = time();
         @set_time_limit(30);
         try {
+            $algorithms = selectAlgorithms($algorithms);
             [$policyHost] = parseTarget($input);
             $policyId = resolvePolicyId($policyIdIn, $policyHost);
-            $result = lookup($input, true);
+            $result = lookup($input, true, $algorithms);
             $policyXml = buildSignaturePolicyXml(
                 $result[2],
                 $anchor,
@@ -653,6 +712,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
   table.fp td { padding: .1rem 0; }
   select { padding: .45rem; }
   .muted { color: var(--muted); font-size: .9em; }
+  fieldset.algs { border: 1px solid var(--border); border-radius: 4px; margin: .8rem 0; padding: .4rem .8rem; }
+  fieldset.algs label { display: inline-block; margin: .15rem 1rem .15rem 0; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -679,6 +740,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
   <label>Policy ID (URI):
     <input type="text" name="policy_id" value="<?= $e($policyIdIn) ?>" placeholder="<?= $e(DEFAULT_POLICY_ID_PREFIX) ?>&lt;host&gt;" maxlength="300">
   </label>
+  <fieldset class="algs">
+    <legend>Fingerprint algorithms</legend>
+    <?php foreach (array_keys(TRUST_ANCHOR_ALGORITHMS) as $alg): $ok = isAlgorithmSupported($alg); ?>
+      <label<?= $ok ? '' : ' class="muted" title="Not supported by this server\'s OpenSSL"' ?>>
+        <input type="checkbox" name="algorithms[]" value="<?= $e($alg) ?>"<?= $ok && in_array($alg, $algorithms, true) ? ' checked' : '' ?><?= $ok ? '' : ' disabled' ?>>
+        <?= $e($alg) ?>
+      </label>
+    <?php endforeach; ?>
+  </fieldset>
   <button type="submit">Look up</button>
 </form>
 
