@@ -1,4 +1,4 @@
-# Certificate Fingerprints (`cert_fingerprints.php`)
+# DVB-I SecurityPolicy Generator (`cert_fingerprints.php`)
 
 A single-file PHP script that asks for a URL or hostname, connects to it over TLS, and reports the fingerprints of every certificate the server presents (the leaf certificate plus any intermediates).
 

@@ -25,11 +25,11 @@ declare(strict_types=1);
  * Requires PHP 8.0+ with the OpenSSL extension.
  *
  * SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2026, paulhiggs. See the LICENSE file.
+ * Copyright (c) 2026, Paul Higgs. See the LICENSE file.
  *
  * Written by Claude (Anthropic), November 2026, in collaboration with the
  * requesting user. The SignaturePolicy output was written against the June 2026
- * draft of DVB A177r8 and has not been checked against the final standard.
+ * publication of DVB A177r8.
  */
 
 /* ============================== CONFIG ============================== */
@@ -694,7 +694,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Certificate Fingerprints</title>
+<title>DVB-I SecurityPolicy Generator</title>
 <style>
   :root { --bg:#fff; --fg:#1a1a1a; --muted:#666; --border:#ccc; --card:#f8f8f8; --err:#b00020; }
   @media (prefers-color-scheme: dark) {
@@ -722,12 +722,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 </style>
 </head>
 <body>
-<h1>Certificate Fingerprints</h1>
+<h1>DVB-I SecurityPolicy Generator</h1>
 <form method="post" autocomplete="off">
   <input type="hidden" name="csrf" value="<?= $e($_SESSION['csrf']) ?>">
   <label>URL or hostname:
     <input type="text" name="target" value="<?= $e($input) ?>" placeholder="example.com" maxlength="300" required autofocus>
   </label>
+  <br>
   <label>TrustAnchor CAs:
     <select name="anchor">
       <option value="all"<?= $anchor === 'all' ? ' selected' : '' ?>>All CAs in chain</option>
