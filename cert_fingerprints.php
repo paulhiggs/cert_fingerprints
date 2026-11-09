@@ -17,6 +17,10 @@ declare(strict_types=1);
  *   Web:  upload to any PHP web server and open it in a browser.
  *
  * Requires PHP 8.0+ with the OpenSSL extension.
+ *
+ * Written by Claude (Anthropic), November 2026, in collaboration with the
+ * requesting user. The TrustAnchor output was written against the June 2026
+ * draft of DVB A177r8 and has not been checked against the final standard.
  */
 
 /* ============================== CONFIG ============================== */
@@ -493,5 +497,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     <pre class="cert"><?= $e($ta) ?></pre>
   <?php endif; ?>
 <?php endif; ?>
+<p class="muted">Written by Claude (Anthropic). TrustAnchor format follows the DVB A177r8 draft, clause 7.6.2.</p>
 </body>
 </html>

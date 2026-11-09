@@ -216,3 +216,7 @@ CLI mode applies none of these restrictions, since it runs as you.
 | `Port N is not allowed` | Add the port to `WEB_ALLOWED_PORTS` |
 | `...resolves to a private or reserved address` | Intentional SSRF protection; see Configuration |
 | Works locally but not on shared hosting | The host may block outbound connections |
+
+## Credits
+
+Written by Claude (Anthropic) in collaboration with the requesting user, November 2026. The `TrustAnchor` output was built from clause 7.6.2 of the DVB A177r8 draft (June 2026) and has not been tested against a DVB-I client or the final published standard.
