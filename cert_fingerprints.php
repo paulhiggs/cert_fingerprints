@@ -628,7 +628,10 @@ session_start();
 header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: DENY');
 header('Referrer-Policy: no-referrer');
-header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'");
+// Per-request nonce: the only script allowed to run is the page's own
+// copy-to-clipboard handler.
+$cspNonce = base64_encode(random_bytes(16));
+header("Content-Security-Policy: default-src 'none'; script-src 'nonce-$cspNonce'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'");
 header('Cache-Control: no-store');
 
 if (empty($_SESSION['csrf'])) {
@@ -714,6 +717,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
   .muted { color: var(--muted); font-size: .9em; }
   fieldset.algs { border: 1px solid var(--border); border-radius: 4px; margin: .8rem 0; padding: .4rem .8rem; }
   fieldset.algs label { display: inline-block; margin: .15rem 1rem .15rem 0; white-space: nowrap; }
+  .copybar { display: flex; align-items: center; gap: .8rem; margin-top: .6rem; }
+  .copybar + pre.cert { margin-top: .5rem; }
 </style>
 </head>
 <body>
@@ -777,7 +782,52 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
   <?php if ($policyXml === null): ?>
     <p class="error">No CA certificate was presented in the chain, so no TrustAnchor (and therefore no valid SignaturePolicy) can be generated. The server may have sent only its leaf certificate.</p>
   <?php else: ?>
-    <pre class="cert"><?= $e($policyXml) ?></pre>
+    <div class="copybar">
+      <!-- Hidden until the script runs, so it never shows without JavaScript. -->
+      <button type="button" id="copy-policy" hidden>Copy to clipboard</button>
+      <span id="copy-status" class="muted" role="status" aria-live="polite"></span>
+    </div>
+    <pre class="cert" id="policy-xml"><?= $e($policyXml) ?></pre>
+    <script nonce="<?= $e($cspNonce) ?>">
+    (function () {
+      var btn = document.getElementById('copy-policy');
+      var pre = document.getElementById('policy-xml');
+      var status = document.getElementById('copy-status');
+      var timer;
+      function report(msg) {
+        status.textContent = msg;
+        clearTimeout(timer);
+        timer = setTimeout(function () { status.textContent = ''; }, 2500);
+      }
+      // Fallback for browsers or plain-HTTP pages without the async Clipboard API.
+      function legacyCopy(text) {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch (err) { ok = false; }
+        document.body.removeChild(ta);
+        return ok;
+      }
+      btn.hidden = false;
+      btn.addEventListener('click', function () {
+        var text = pre.textContent;
+        var done = function () { report('Copied.'); };
+        var fail = function () {
+          if (legacyCopy(text)) { done(); } else { report('Copy failed: select the XML and copy it manually.'); }
+        };
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(text).then(done, fail);
+        } else {
+          fail();
+        }
+      });
+    })();
+    </script>
   <?php endif; ?>
 <?php endif; ?>
 <p class="muted">Written by Claude (Anthropic). SignaturePolicy format follows the DVB A177r8 draft, clause 7.6.2.</p>
