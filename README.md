@@ -17,6 +17,7 @@ It runs from the command line or on a web server.
 - Generates a DVB-I `SignaturePolicy` element (see [SignaturePolicy output](#signaturepolicy-output-dvb-a177r8-clause-762)) with:
   - a `TrustAnchor` containing a `CAFingerprint` for each Certificate Authority in the chain
   - a `SubjectConstraint` containing a `CN` for every hostname associated with the host you entered
+- A **Copy to clipboard** button for the `SignaturePolicy` element on the web page
 - Hardened web mode for public hosting (see [Security](#security-web-mode))
 
 ## Requirements
@@ -204,7 +205,7 @@ A tool that makes outbound connections on behalf of visitors can be abused, so w
 - **SSRF protection:** hostnames are resolved first and rejected if any address is private or reserved. The script then connects to the resolved IP (while still sending the hostname for SNI), which prevents DNS-rebinding tricks.
 - **Port allowlist:** only the ports in `WEB_ALLOWED_PORTS` are accepted.
 - **CSRF token** on the form and **per-session rate limiting**.
-- **Security headers:** `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, and `Cache-Control: no-store`.
+- **Security headers:** `Content-Security-Policy` (scripts are blocked except the page's own copy-to-clipboard handler, which is allowed by a per-request nonce), `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, and `Cache-Control: no-store`.
 - **Input validation and output escaping:** length and port range are checked, and all output is HTML-escaped.
 
 CLI mode applies none of these restrictions, since it runs as you.
