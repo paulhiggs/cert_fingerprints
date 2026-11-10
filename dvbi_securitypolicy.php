@@ -10,12 +10,14 @@ declare(strict_types=1);
  * It also generates a complete <SignaturePolicy> element whose syntax and
  * semantics follow DVB A177r8 (draft ETSI TS 103 770 V1.3.1), clause 7.6.2:
  *   - <Enforcement>       required | warn | vendor
- *   - <TrustAnchor>       one <CAFingerprint> per CA certificate in the chain
+ *   - <TrustAnchor>       one <CAFingerprint> per CA certificate in the chain,
+ *                         plus the host's own certificate if requested
  *   - <SubjectConstraint> one <CN> per hostname associated with the host
  *   - @policyId           identifier of the policy
  *
  * Works two ways:
  *   CLI:  php dvbi_securitypolicy.php [host] [--anchor=all|root|issuer]
+ *             [--include-host]
  *             [--enforcement=required|warn|vendor] [--policy-id=URI]
  *             [--algorithms=sha-1,sha-256,...|all]
  *         (default algorithms: sha-1, sha-256, sha-512, sm3)
@@ -295,26 +297,29 @@ function xmlCommentSafe(string $s): string
  * Pick the certificates that qualify as Certificate Authorities (DVB A177r8,
  * clause 7.6.2.3: "the Certificate Authority whose certificate must be present
  * in the certificate chain"). The server's own (leaf) certificate is only
- * eligible if it is self-signed.
+ * eligible as a CA if it is self-signed.
  *
- * $selection: 'all'    every CA certificate in the chain (default)
- *             'root'   only the top-most CA certificate in the chain
- *             'issuer' only the CA certificate nearest the leaf
+ * $selection:   'all'    every CA certificate in the chain (default)
+ *               'root'   only the top-most CA certificate in the chain
+ *               'issuer' only the CA certificate nearest the leaf
+ * $includeHost: also include the host's own (leaf) certificate, placed first.
+ *               It is never listed twice.
  */
-function selectAnchorCerts(array $certs, string $selection = 'all'): array
+function selectAnchorCerts(array $certs, string $selection = 'all', bool $includeHost = false): array
 {
     $cas = array_values(array_filter(
         $certs,
         static fn(array $c): bool => ($c['index'] > 0 && $c['is_ca']) || $c['self_signed']
     ));
-    if (!$cas) {
-        return [];
-    }
-    return match ($selection) {
+    $chosen = !$cas ? [] : match ($selection) {
         'root'   => [end($cas)],
         'issuer' => [$cas[0]],
         default  => $cas,
     };
+    if ($includeHost && isset($certs[0]) && !in_array(0, array_column($chosen, 'index'), true)) {
+        array_unshift($chosen, $certs[0]);
+    }
+    return $chosen;
 }
 
 /**
@@ -324,21 +329,27 @@ function selectAnchorCerts(array $certs, string $selection = 'all'): array
  *     <CAFingerprint algorithm="...">AA:BB:...</CAFingerprint>   (1..unbounded)
  *   </TrustAnchor>
  *
- * Each selected CA is written once per supported algorithm. The element has
- * no namespace declaration of its own: it inherits it from <SignaturePolicy>.
- * Returns null if the chain contains no CA certificate (CAFingerprint is
- * mandatory, so no valid element can be produced).
+ * Each selected certificate is written once per supported algorithm. The
+ * element has no namespace declaration of its own: it inherits it from
+ * <SignaturePolicy>. Returns null if nothing was selected (CAFingerprint is
+ * mandatory, so no valid element can be produced). That only happens when the
+ * chain has no CA certificate and $includeHost is false.
  */
-function buildTrustAnchorXml(array $certs, string $selection = 'all', string $indent = ''): ?string
-{
-    $chosen = selectAnchorCerts($certs, $selection);
+function buildTrustAnchorXml(
+    array $certs,
+    string $selection = 'all',
+    string $indent = '',
+    bool $includeHost = false
+): ?string {
+    $chosen = selectAnchorCerts($certs, $selection, $includeHost);
     if (!$chosen) {
         return null;
     }
 
     $xml = $indent . '<TrustAnchor>' . "\n";
     foreach ($chosen as $c) {
-        $xml .= $indent . '  <!-- ' . xmlCommentSafe($c['subject']) . ' -->' . "\n";
+        $label = ($c['index'] === 0 && !$c['self_signed'] ? 'host certificate: ' : '') . $c['subject'];
+        $xml .= $indent . '  <!-- ' . xmlCommentSafe($label) . ' -->' . "\n";
         foreach ($c['anchor_fps'] as $algorithm => $fingerprint) {
             $xml .= $indent . '  <CAFingerprint algorithm="' . xmlEsc($algorithm) . '">'
                   . xmlEsc($fingerprint) . '</CAFingerprint>' . "\n";
@@ -475,20 +486,22 @@ function resolvePolicyId(string $policyId, string $host): string
  *     <SubjectConstraint><CN>...</CN> (1..unbounded)</SubjectConstraint>
  *   </SignaturePolicy>
  *
- * $hostnames is the result of associatedHostnames(). Returns null if no
- * TrustAnchor can be built (see buildTrustAnchorXml()).
+ * $hostnames is the result of associatedHostnames(). $includeHost adds the
+ * host's own certificate to the TrustAnchor. Returns null if no TrustAnchor
+ * can be built (see buildTrustAnchorXml()).
  */
 function buildSignaturePolicyXml(
     array $certs,
     string $selection,
     string $policyId,
     string $enforcement,
-    array $hostnames
+    array $hostnames,
+    bool $includeHost = false
 ): ?string {
     if (!in_array($enforcement, SIGNATURE_POLICY_ENFORCEMENTS, true)) {
         throw new InvalidArgumentException('Enforcement must be one of: ' . implode(', ', SIGNATURE_POLICY_ENFORCEMENTS) . '.');
     }
-    $trustAnchor = buildTrustAnchorXml($certs, $selection, '  ');
+    $trustAnchor = buildTrustAnchorXml($certs, $selection, '  ', $includeHost);
     if ($trustAnchor === null) {
         return null;
     }
@@ -555,8 +568,11 @@ if (PHP_SAPI === 'cli') {
     $enforcement = DEFAULT_ENFORCEMENT;
     $policyIdArg = '';
     $algorithmsArg = DEFAULT_ALGORITHMS;
+    $includeHost = false;
     foreach (array_slice($argv, 1) as $arg) {
-        if (preg_match('/^--algorithms?=(.*)$/', $arg, $m)) {
+        if ($arg === '--include-host') {
+            $includeHost = true;
+        } elseif (preg_match('/^--algorithms?=(.*)$/', $arg, $m)) {
             $algorithmsArg = explode(',', $m[1]);
         } elseif (preg_match('/^--anchor=(all|root|issuer)$/', $arg, $m)) {
             $anchor = $m[1];
@@ -585,8 +601,10 @@ if (PHP_SAPI === 'cli') {
 
     echo "\nCertificates presented by $host:$port (" . count($certs) . ")\n";
     echo str_repeat('=', 60) . "\n";
+    $anchorIdx = array_column(selectAnchorCerts($certs, $anchor, $includeHost), 'index');
     foreach ($certs as $c) {
-        $role = $c['index'] === 0 ? 'leaf' : 'chain';
+        $role = ($c['index'] === 0 ? 'leaf' : 'chain')
+              . (in_array($c['index'], $anchorIdx, true) ? ', in TrustAnchor' : '');
         echo "\n[{$c['index']}] ($role) {$c['subject']}\n";
         echo "    Issuer:     {$c['issuer']}\n";
         echo "    Valid:      {$c['valid_from']}  ->  {$c['valid_to']}\n";
@@ -601,12 +619,15 @@ if (PHP_SAPI === 'cli') {
         echo "\nNote: not supported by this OpenSSL build, skipped: " . implode(', ', $skipped) . "\n";
     }
 
-    echo "\nSignaturePolicy (DVB A177r8 clause 7.6.2, --anchor=$anchor, --enforcement=$enforcement, --algorithms=" . implode(',', $algorithms) . ")\n";
+    echo "\nSignaturePolicy (DVB A177r8 clause 7.6.2, --anchor=$anchor"
+       . ($includeHost ? ', --include-host' : '')
+       . ", --enforcement=$enforcement, --algorithms=" . implode(',', $algorithms) . ")\n";
     echo str_repeat('=', 60) . "\n";
-    $policy = buildSignaturePolicyXml($certs, $anchor, $policyId, $enforcement, associatedHostnames($host, $certs[0]));
+    $policy = buildSignaturePolicyXml($certs, $anchor, $policyId, $enforcement, associatedHostnames($host, $certs[0]), $includeHost);
     if ($policy === null) {
         echo "No CA certificate was presented in the chain, so no TrustAnchor (and therefore no\n";
         echo "valid SignaturePolicy) can be generated. The server may have sent only its leaf certificate.\n";
+        echo "Add --include-host to put the host's own certificate in the TrustAnchor instead.\n";
     } else {
         echo $policy . "\n";
     }
@@ -642,6 +663,7 @@ $e = static fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_SUBST
 
 $input  = '';
 $anchor = 'all';
+$includeHost = false;
 $enforcement = DEFAULT_ENFORCEMENT;
 $policyIdIn  = '';
 $algorithms  = array_values(array_filter(DEFAULT_ALGORITHMS, 'isAlgorithmSupported'));
@@ -652,6 +674,7 @@ $policyXml = null;
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $input  = trim((string)($_POST['target'] ?? ''));
     $anchor = in_array($_POST['anchor'] ?? '', ['all', 'root', 'issuer'], true) ? $_POST['anchor'] : 'all';
+    $includeHost = ($_POST['include_host'] ?? '') === '1';
     $enforcement = in_array($_POST['enforcement'] ?? '', SIGNATURE_POLICY_ENFORCEMENTS, true) ? $_POST['enforcement'] : DEFAULT_ENFORCEMENT;
     $policyIdIn  = trim((string)($_POST['policy_id'] ?? ''));
     $token  = (string)($_POST['csrf'] ?? '');
@@ -681,7 +704,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $anchor,
                 $policyId,
                 $enforcement,
-                associatedHostnames($result[0], $result[2][0])
+                associatedHostnames($result[0], $result[2][0]),
+                $includeHost
             );
         } catch (Throwable $ex) {
             $error = $ex->getMessage();
@@ -736,6 +760,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
       <option value="issuer"<?= $anchor === 'issuer' ? ' selected' : '' ?>>Issuing CA only</option>
     </select>
   </label>
+  <label>
+    <input type="checkbox" name="include_host" value="1"<?= $includeHost ? ' checked' : '' ?>>
+    Include host certificate
+  </label>
   <label>Enforcement:
     <select name="enforcement">
       <?php foreach (SIGNATURE_POLICY_ENFORCEMENTS as $opt): ?>
@@ -765,9 +793,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
   <?php if ($ip && $ip !== $host): ?>
     <p class="muted">Connected to <?= $e($ip) ?></p>
   <?php endif; ?>
+  <?php $anchorIdx = array_column(selectAnchorCerts($certs, $anchor, $includeHost), 'index'); ?>
   <?php foreach ($certs as $c): ?>
     <div class="cert">
-      <strong>[<?= (int)$c['index'] ?>] <?= $c['index'] === 0 ? 'Leaf' : 'Chain' ?>: <?= $e($c['subject']) ?></strong><br>
+      <strong>[<?= (int)$c['index'] ?>] <?= $c['index'] === 0 ? 'Leaf' : 'Chain' ?>: <?= $e($c['subject']) ?></strong>
+      <?php if (in_array($c['index'], $anchorIdx, true)): ?><span class="muted">&mdash; in TrustAnchor</span><?php endif; ?><br>
       Issuer: <?= $e($c['issuer']) ?><br>
       Valid: <?= $e($c['valid_from']) ?> &rarr; <?= $e($c['valid_to']) ?><br>
       <table class="fp">
@@ -781,7 +811,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
   <h2>SignaturePolicy</h2>
   <p class="muted">DVB A177r8 clause 7.6.2. The default policy ID is a placeholder: replace it with an identifier you own.</p>
   <?php if ($policyXml === null): ?>
-    <p class="error">No CA certificate was presented in the chain, so no TrustAnchor (and therefore no valid SignaturePolicy) can be generated. The server may have sent only its leaf certificate.</p>
+    <p class="error">No CA certificate was presented in the chain, so no TrustAnchor (and therefore no valid SignaturePolicy) can be generated. The server may have sent only its leaf certificate. Tick <strong>Include host certificate</strong> to put the host's own certificate in the TrustAnchor instead.</p>
   <?php else: ?>
     <div class="copybar">
       <!-- Hidden until the script runs, so it never shows without JavaScript. -->

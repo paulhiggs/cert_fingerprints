@@ -17,7 +17,7 @@ It runs from the command line or on a web server.
 - Sends SNI, so hosts serving multiple sites return the correct certificate
 - Supports IPv4 and IPv6
 - Generates a DVB-I `SignaturePolicy` element (see [SignaturePolicy output](#signaturepolicy-output-dvb-a177r8-clause-762)) with:
-  - a `TrustAnchor` containing a `CAFingerprint` for each Certificate Authority in the chain
+  - a `TrustAnchor` containing a `CAFingerprint` for each Certificate Authority in the chain, and optionally for the host's own certificate
   - a `SubjectConstraint` containing a `CN` for every hostname associated with the host you entered
 - A **Copy to clipboard** button for the `SignaturePolicy` element on the web page
 - Hardened web mode for public hosting (see [Security](#security-web-mode))
@@ -60,6 +60,7 @@ Options for the generated `SignaturePolicy`:
 php dvbi_securitypolicy.php example.com --anchor=root     # root-most CA only
 php dvbi_securitypolicy.php example.com --anchor=issuer   # issuing CA only
 php dvbi_securitypolicy.php example.com --anchor=all      # every CA in the chain (default)
+php dvbi_securitypolicy.php example.com --include-host    # also include the host's own certificate
 
 php dvbi_securitypolicy.php example.com --enforcement=warn            # required (default) | warn | vendor
 php dvbi_securitypolicy.php example.com --policy-id=urn:acme:policy:1 # the policyId attribute
@@ -76,7 +77,7 @@ If `--policy-id` is omitted, the placeholder `urn:example:signature-policy:<host
 
 1. Upload `dvbi_securitypolicy.php` to any PHP-enabled web server.
 2. Open it in a browser.
-3. Enter a URL or hostname, tick the fingerprint algorithms you want (SHA-1, SHA-256, SHA-512 and SM3 are ticked by default; any your OpenSSL build lacks are greyed out), and click **Look up**.
+3. Enter a URL or hostname, choose the TrustAnchor CAs (and tick **Include host certificate** if you want the host's own certificate in the TrustAnchor too), tick the fingerprint algorithms you want (SHA-1, SHA-256, SHA-512 and SM3 are ticked by default; any your OpenSSL build lacks are greyed out), and click **Look up**.
 
 For a quick local test without a web server:
 
@@ -101,7 +102,7 @@ Certificates presented by example.com:443 (2)
       sha-512:      45:67:89:...
       sm3:          56:78:9A:...
 
-[1] (chain) Example Intermediate CA
+[1] (chain, in TrustAnchor) Example Intermediate CA
     Issuer:     Example Root CA
     Valid:      2020-01-01 00:00:00 UTC  ->  2030-01-01 23:59:59 UTC
     Fingerprints:
@@ -111,7 +112,7 @@ Certificates presented by example.com:443 (2)
       sm3:          CD:EF:01:...
 ```
 
-(Values above are illustrative. Every certificate, including the leaf, shows a fingerprint for each selected algorithm (the defaults are shown), and the `SignaturePolicy` element follows after the last certificate.)
+(Values above are illustrative. Every certificate, including the leaf, shows a fingerprint for each selected algorithm (the defaults are shown). Certificates written to the `TrustAnchor` are marked `in TrustAnchor` (on the web page, "in TrustAnchor" after the subject). The `SignaturePolicy` element follows after the last certificate.)
 
 ## SignaturePolicy output (DVB A177r8 clause 7.6.2)
 
@@ -143,8 +144,8 @@ After the certificate list, the script prints a complete `SignaturePolicy` eleme
 |---|---|
 | `SignaturePolicy` / `@policyId` (mandatory URI) | `--policy-id`, or the web form field. If left empty, the placeholder `urn:example:signature-policy:<host>` is used. The value must be a URI with a scheme |
 | `Enforcement` (mandatory): `required`, `warn` or `vendor` | `--enforcement` or the web selector. Defaults to `required` |
-| `TrustAnchor` contains one or more `CAFingerprint` elements (1 .. unbounded) | One `CAFingerprint` is written per selected CA certificate and algorithm |
-| `CAFingerprint`: the fingerprint of the Certificate Authority whose certificate must be present in the certificate chain | Only CA certificates are used: certificates with `basicConstraints CA:TRUE` that are not the server's leaf certificate, plus a self-signed leaf. The server's ordinary leaf certificate is never included |
+| `TrustAnchor` contains one or more `CAFingerprint` elements (1 .. unbounded) | One `CAFingerprint` is written per selected certificate and algorithm |
+| `CAFingerprint`: the fingerprint of the Certificate Authority whose certificate must be present in the certificate chain | By default only CA certificates are used: certificates with `basicConstraints CA:TRUE` that are not the server's leaf certificate, plus a self-signed leaf. The server's ordinary leaf certificate is included only if you ask for it (`--include-host` or **Include host certificate**) |
 | `CAFingerprint` value pattern: hex byte pairs separated by colons (`HexDigit{2}(:HexDigit{2})*`) | Upper-case, colon-separated hex of the certificate's DER encoding, e.g. `AB:CD:EF:...` |
 | `@algorithm` (mandatory): the algorithm used to generate the fingerprint | One `CAFingerprint` per selected algorithm (`--algorithms=` or the web checkboxes; default `sha-1`, `sha-256`, `sha-512`, `sm3`). Available: `sha-1`, `sha-224`, `sha-256`, `sha-384`, `sha-512`, `sha-512/224`, `sha-512/256`, `sha3-224`, `sha3-256`, `sha3-384`, `sha3-512` and `sm3`. The specification does not enumerate `@algorithm` values; `sha-1`, `sha-256` and `sm3` are the names used in clause 7.5.2 and the others follow the same style |
 | `SubjectConstraint` (optional, 0 .. 1) with `CN` (1 .. unbounded): the common name, optionally wildcarded, of a host endpoint that may provide the final document or data after any request or DNS redirection | One `CN` per associated hostname (see below). Omitted only if no hostname can be determined, for example an IP address with no names in its certificate |
@@ -174,13 +175,19 @@ Names are lower-cased, de-duplicated, stripped of any trailing dot, converted to
 | `root` | Only the top-most CA certificate in the chain |
 | `issuer` | Only the CA certificate nearest the server certificate |
 
+### Including the host certificate
+
+`--include-host` (or the **Include host certificate** checkbox) adds the host's own certificate to the `TrustAnchor`, ahead of the CA certificates chosen with `--anchor`. Its comment in the XML starts with `host certificate:`. If the host certificate is self-signed, it already counts as a CA and is not listed twice.
+
+This goes beyond the wording of clause 7.6.2.3, which describes `CAFingerprint` as identifying a Certificate Authority. Check that your DVB-I client accepts a server certificate fingerprint there. A host certificate is also replaced at every renewal, often every few months, so a policy that pins it must be updated each time.
+
 **Multiple algorithms:** because each CA appears once per algorithm, a `TrustAnchor` for one CA contains several `CAFingerprint` elements that all describe the same certificate. Any algorithm your PHP/OpenSSL build does not support (for example `sm3` or the `sha3-*` family on older or restricted builds) is silently skipped. MD5 and other legacy digests are deliberately not included. The specification does not say how a client treats several fingerprints, for example whether one matching entry is enough, so check how your DVB-I client interprets them. If it treats each entry as a separate CA, trim `TRUST_ANCHOR_ALGORITHMS` to one entry.
 
 Pinning the root-most CA is usually the most stable choice because intermediates are replaced more often. The specification does not say whether several `CAFingerprint` entries are alternatives or all required, so check how your DVB-I client interprets them before including more than one.
 
 ### When no SignaturePolicy is produced
 
-`TrustAnchor` and `CAFingerprint` are mandatory (1 .. unbounded), so if the server sends only its leaf certificate, and that leaf is not self-signed, no valid `SignaturePolicy` can be built. The script says so instead of emitting an empty or invalid element. Many servers omit the root CA, but they normally send the intermediates, which are enough to produce a `TrustAnchor` with `--anchor=issuer`.
+`TrustAnchor` and `CAFingerprint` are mandatory (1 .. unbounded), so if the server sends only its leaf certificate, and that leaf is not self-signed, no valid `SignaturePolicy` can be built. The script says so instead of emitting an empty or invalid element. Many servers omit the root CA, but they normally send the intermediates, which are enough to produce a `TrustAnchor` with `--anchor=issuer`. If the server sends no CA certificate at all, `--include-host` lets you build a policy from the host certificate alone (see [Including the host certificate](#including-the-host-certificate)).
 
 ## Configuration
 
@@ -223,7 +230,7 @@ CLI mode applies none of these restrictions, since it runs as you.
 2. *(Web mode)* The host is resolved and checked against the security rules.
 3. A TLS connection is opened with `capture_peer_cert_chain` enabled and verification disabled.
 4. Each certificate in the captured chain is parsed with `openssl_x509_parse()` and fingerprinted with `openssl_x509_fingerprint()`.
-5. CA certificates are selected from the chain and written as a `TrustAnchor` element.
+5. CA certificates (and, if requested, the host certificate) are selected from the chain and written as a `TrustAnchor` element.
 6. Associated hostnames are collected (entered host, CNAME chain, certificate names, reverse DNS) and written as the `SubjectConstraint`.
 7. Everything is wrapped in a `SignaturePolicy` element with the chosen `Enforcement` and `policyId`.
 8. Results are printed as text (CLI) or HTML (web).
