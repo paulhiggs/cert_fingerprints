@@ -196,7 +196,7 @@ Settings are constants at the top of the script.
 | Constant | Default | Applies to | Description |
 |---|---|---|---|
 | `WEB_BLOCK_PRIVATE_ADDRESSES` | `true` | Web | Refuse hosts that resolve to private, loopback, or reserved addresses |
-| `WEB_ALLOWED_PORTS` | `[443, 465, 636, 853, 993, 995, 8443]` | Web | Ports visitors may query. Use `[]` to allow any port |
+| `WEB_ALLOWED_PORTS` | `[443, 465, 636, 853, 993, 995, 3031, 8443]` | Web | Ports visitors may query. Use `[]` to allow any port |
 | `WEB_COOLDOWN_SECONDS` | `3` | Web | Minimum seconds between lookups per visitor session |
 | `CONNECT_TIMEOUT` | `8` | Both | Connection timeout in seconds |
 | `TRUST_ANCHOR_ALGORITHMS` | SHA-1, SHA-2 family, SHA-3 family, SM3 | Both | Map of `@algorithm` value to PHP/OpenSSL digest name. These are the algorithms users can choose from; unsupported entries are skipped. Add or remove entries to change the set |

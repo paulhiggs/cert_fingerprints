@@ -41,7 +41,7 @@ declare(strict_types=1);
 const WEB_BLOCK_PRIVATE_ADDRESSES = true;
 
 // Web mode only: ports users may query. Set to [] to allow any port.
-const WEB_ALLOWED_PORTS = [443, 465, 636, 853, 993, 995, 8443];
+const WEB_ALLOWED_PORTS = [443, 465, 636, 853, 993, 995, 3031, 8443];
 
 // Web mode only: minimum seconds between lookups per visitor session.
 const WEB_COOLDOWN_SECONDS = 3;
