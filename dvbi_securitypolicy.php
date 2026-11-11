@@ -24,6 +24,9 @@ declare(strict_types=1);
  *         (prompts if no host given)
  *   Web:  upload to any PHP web server and open it in a browser.
  *
+ * Certificate retrieval and fingerprinting live in cert_lookup.php, which must
+ * be in the same directory and can also be used on its own by other scripts.
+ *
  * Requires PHP 8.0+ with the OpenSSL extension.
  *
  * SPDX-License-Identifier: BSD-3-Clause
@@ -46,33 +49,8 @@ const WEB_ALLOWED_PORTS = [443, 465, 636, 853, 993, 995, 3031, 8443];
 // Web mode only: minimum seconds between lookups per visitor session.
 const WEB_COOLDOWN_SECONDS = 3;
 
-// Connection timeout in seconds.
-const CONNECT_TIMEOUT = 8;
-
-// DVB A177r8 clause 7.6.2: a CAFingerprint is written for each selected digest
-// below (see DEFAULT_ALGORITHMS), each with its mandatory @algorithm attribute. The spec does not enumerate
-// @algorithm values; sha-1, sha-256 and sm3 are the names used in clause 7.5.2
-// and the rest follow the same lower-case, hyphenated style. The right-hand
-// side is the name PHP/OpenSSL uses. Any algorithm the local OpenSSL build
-// does not support is skipped. Weak or legacy digests (MD5 etc.) are left out.
-const TRUST_ANCHOR_ALGORITHMS = [
-    'sha-1'       => 'sha1',
-    'sha-224'     => 'sha224',
-    'sha-256'     => 'sha256',
-    'sha-384'     => 'sha384',
-    'sha-512'     => 'sha512',
-    'sha-512/224' => 'sha512-224',
-    'sha-512/256' => 'sha512-256',
-    'sha3-224'    => 'sha3-224',
-    'sha3-256'    => 'sha3-256',
-    'sha3-384'    => 'sha3-384',
-    'sha3-512'    => 'sha3-512',
-    'sm3'         => 'sm3',
-];
-
-// Algorithms selected when the user makes no choice (CLI --algorithms, or the
-// web form on first load). Keys of TRUST_ANCHOR_ALGORITHMS.
-const DEFAULT_ALGORITHMS = ['sha-1', 'sha-256', 'sha-512', 'sm3'];
+// The connection timeout and the fingerprint algorithms (CONNECT_TIMEOUT,
+// TRUST_ANCHOR_ALGORITHMS, DEFAULT_ALGORITHMS) are configured in cert_lookup.php.
 
 // SignaturePolicy defaults (clause 7.6.2). The generated default policyId is a
 // placeholder URN: replace it with an identifier you own.
@@ -91,193 +69,8 @@ const DVBI_TYPES_NS = 'urn:dvb:metadata:servicediscovery-types:2026';
 
 /* ============================ CORE LOGIC ============================ */
 
-/** Turn a URL or bare hostname into [host, port]. */
-function parseTarget(string $input): array
-{
-    $input = trim($input);
-    if ($input === '') {
-        throw new InvalidArgumentException('No URL or hostname entered.');
-    }
-    if (strlen($input) > 300) {
-        throw new InvalidArgumentException('Input is too long.');
-    }
-    if (!preg_match('#^[a-z][a-z0-9+.-]*://#i', $input)) {
-        $input = 'https://' . $input;
-    }
-    $parts = parse_url($input);
-    if ($parts === false || empty($parts['host'])) {
-        throw new InvalidArgumentException("Could not parse a hostname from '$input'.");
-    }
-    $host = trim($parts['host'], '[]');          // strip IPv6 brackets
-    $port = (int)($parts['port'] ?? 443);
-    if ($port < 1 || $port > 65535) {
-        throw new InvalidArgumentException('Invalid port number.');
-    }
-    return [$host, $port];
-}
-
-/** Resolve a hostname to its public-facing IPs (A + AAAA). */
-function resolveHost(string $host): array
-{
-    if (filter_var($host, FILTER_VALIDATE_IP)) {
-        return [$host];
-    }
-    $ips = gethostbynamel($host) ?: [];
-    $aaaa = @dns_get_record($host, DNS_AAAA) ?: [];
-    foreach ($aaaa as $rec) {
-        if (!empty($rec['ipv6'])) {
-            $ips[] = $rec['ipv6'];
-        }
-    }
-    if (!$ips) {
-        throw new RuntimeException("Could not resolve '$host'.");
-    }
-    return array_values(array_unique($ips));
-}
-
-/** True if the IP is a normal public address. */
-function isPublicIp(string $ip): bool
-{
-    return filter_var(
-        $ip,
-        FILTER_VALIDATE_IP,
-        FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
-    ) !== false;
-}
-
-/**
- * Connect via TLS and return the certificate chain the server sent.
- * If $connectIp is given we connect to that IP (not the hostname), while
- * still sending $host as the SNI name. This prevents DNS-rebinding tricks.
- */
-function fetchCertChain(string $host, int $port, ?string $connectIp = null): array
-{
-    $context = stream_context_create(['ssl' => [
-        'capture_peer_cert_chain' => true,
-        // We want fingerprints even for expired / self-signed / mismatched certs.
-        'verify_peer'       => false,
-        'verify_peer_name'  => false,
-        'allow_self_signed' => true,
-        'SNI_enabled'       => true,
-        'peer_name'         => $host,
-    ]]);
-
-    $target  = $connectIp ?? $host;
-    $address = str_contains($target, ':') ? "[$target]" : $target;   // IPv6 literal
-
-    $stream = @stream_socket_client(
-        "ssl://$address:$port",
-        $errno,
-        $errstr,
-        CONNECT_TIMEOUT,
-        STREAM_CLIENT_CONNECT,
-        $context
-    );
-    if ($stream === false) {
-        throw new RuntimeException("Connection failed: $errstr (error $errno)");
-    }
-
-    $params = stream_context_get_params($stream);
-    fclose($stream);
-
-    $chain = $params['options']['ssl']['peer_certificate_chain'] ?? [];
-    if (!$chain) {
-        throw new RuntimeException('Connected, but the server presented no certificates.');
-    }
-    return $chain;
-}
-
-/** Format a hex digest as AA:BB:CC... */
-function colonHex(string $hex): string
-{
-    return implode(':', str_split(strtoupper($hex), 2));
-}
-
-/** True if this PHP/OpenSSL build supports the given @algorithm name. */
-function isAlgorithmSupported(string $name): bool
-{
-    static $supported = null;
-    $supported ??= array_map('strtolower', openssl_get_md_methods(true));
-    return isset(TRUST_ANCHOR_ALGORITHMS[$name])
-        && in_array(TRUST_ANCHOR_ALGORITHMS[$name], $supported, true);
-}
-
-/**
- * Validate a user's algorithm selection. Accepts @algorithm names (any case);
- * "all" selects every supported algorithm. Returns the names in the order of
- * TRUST_ANCHOR_ALGORITHMS. Throws if a name is unknown or nothing usable is left.
- */
-function selectAlgorithms(array $requested): array
-{
-    $requested = array_values(array_filter(array_map(
-        static fn($a): string => strtolower(trim((string)$a)),
-        $requested
-    ), 'strlen'));
-    if (in_array('all', $requested, true)) {
-        $requested = array_keys(TRUST_ANCHOR_ALGORITHMS);
-    }
-    $unknown = array_diff($requested, array_keys(TRUST_ANCHOR_ALGORITHMS));
-    if ($unknown) {
-        throw new InvalidArgumentException(
-            'Unknown algorithm(s): ' . implode(', ', $unknown) . '. Choose from: '
-            . implode(', ', array_keys(TRUST_ANCHOR_ALGORITHMS)) . ', or all.'
-        );
-    }
-    $chosen = array_values(array_filter(
-        array_keys(TRUST_ANCHOR_ALGORITHMS),
-        static fn(string $n): bool => in_array($n, $requested, true) && isAlgorithmSupported($n)
-    ));
-    if (!$chosen) {
-        throw new InvalidArgumentException('Select at least one fingerprint algorithm that this server supports.');
-    }
-    return $chosen;
-}
-
-/**
- * Fingerprints of one certificate for each of the given @algorithm names
- * (keys of TRUST_ANCHOR_ALGORITHMS) that this PHP/OpenSSL build supports.
- * Returns [@algorithm value => 'AA:BB:...'].
- */
-function anchorFingerprints($cert, array $algorithms): array
-{
-    $out = [];
-    foreach ($algorithms as $name) {
-        if (!isAlgorithmSupported($name)) {
-            continue;
-        }
-        $phpName = TRUST_ANCHOR_ALGORITHMS[$name];
-        $hex = @openssl_x509_fingerprint($cert, $phpName);
-        if (is_string($hex) && $hex !== '') {
-            $out[$name] = colonHex($hex);
-        }
-    }
-    return $out;
-}
-
-/** Describe one certificate. */
-function describeCert($cert, int $index, array $algorithms): array
-{
-    $info    = openssl_x509_parse($cert) ?: [];
-    $subject = $info['subject']['CN'] ?? ($info['subject']['O'] ?? '(none)');
-    $issuer  = $info['issuer']['CN']  ?? ($info['issuer']['O']  ?? '(none)');
-
-    $constraints = (string)($info['extensions']['basicConstraints'] ?? '');
-    $san = (string)($info['extensions']['subjectAltName'] ?? '');
-    preg_match_all('/DNS:([^,\s]+)/', $san, $sanMatches);
-
-    return [
-        'index'      => $index,
-        'is_ca'      => stripos($constraints, 'CA:TRUE') !== false,
-        'self_signed' => isset($info['subject'], $info['issuer']) && $info['subject'] === $info['issuer'],
-        'subject'    => (string)$subject,
-        'cn_list'    => array_map('strval', (array)($info['subject']['CN'] ?? [])),
-        'san_dns'    => $sanMatches[1] ?? [],
-        'issuer'     => (string)$issuer,
-        'valid_from' => isset($info['validFrom_time_t']) ? gmdate('Y-m-d H:i:s \U\T\C', $info['validFrom_time_t']) : '?',
-        'valid_to'   => isset($info['validTo_time_t'])   ? gmdate('Y-m-d H:i:s \U\T\C', $info['validTo_time_t'])   : '?',
-        'anchor_fps' => anchorFingerprints($cert, $algorithms),
-    ];
-}
+// Certificate retrieval and fingerprinting (parseTarget, lookup, describeCert, ...).
+require_once __DIR__ . '/cert_lookup.php';
 
 /** Escape text for XML element content / attribute values. */
 function xmlEsc(string $s): string
@@ -521,37 +314,6 @@ function buildSignaturePolicyXml(
     return $xml;
 }
 
-/** Full lookup: returns [host, port, certs[], ip|null]. */
-function lookup(string $input, bool $restricted, array $algorithms): array
-{
-    [$host, $port] = parseTarget($input);
-    $connectIp = null;
-
-    if ($restricted) {
-        if (WEB_ALLOWED_PORTS && !in_array($port, WEB_ALLOWED_PORTS, true)) {
-            throw new InvalidArgumentException(
-                'Port ' . $port . ' is not allowed. Allowed ports: ' . implode(', ', WEB_ALLOWED_PORTS) . '.'
-            );
-        }
-        $ips = resolveHost($host);
-        if (WEB_BLOCK_PRIVATE_ADDRESSES) {
-            foreach ($ips as $ip) {
-                if (!isPublicIp($ip)) {
-                    throw new InvalidArgumentException('That host resolves to a private or reserved address, which is not allowed.');
-                }
-            }
-        }
-        $connectIp = $ips[0];
-    }
-
-    $chain = fetchCertChain($host, $port, $connectIp);
-    $certs = [];
-    foreach ($chain as $i => $cert) {
-        $certs[] = describeCert($cert, $i, $algorithms);
-    }
-    return [$host, $port, $certs, $connectIp];
-}
-
 if (!extension_loaded('openssl')) {
     $msg = 'The PHP OpenSSL extension is required.';
     if (PHP_SAPI === 'cli') {
@@ -593,7 +355,7 @@ if (PHP_SAPI === 'cli') {
         $algorithms = selectAlgorithms($algorithmsArg);
         [$policyHost] = parseTarget($input);
         $policyId = resolvePolicyId($policyIdArg, $policyHost);
-        [$host, $port, $certs] = lookup($input, false, $algorithms);
+        ['host' => $host, 'port' => $port, 'certs' => $certs] = lookup($input, $algorithms);
     } catch (Throwable $e) {
         fwrite(STDERR, 'Error: ' . $e->getMessage() . "\n");
         exit(1);
@@ -698,13 +460,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $algorithms = selectAlgorithms($algorithms);
             [$policyHost] = parseTarget($input);
             $policyId = resolvePolicyId($policyIdIn, $policyHost);
-            $result = lookup($input, true, $algorithms);
+            $result = lookup($input, $algorithms, [
+                'allowed_ports' => WEB_ALLOWED_PORTS,
+                'block_private' => WEB_BLOCK_PRIVATE_ADDRESSES,
+            ]);
             $policyXml = buildSignaturePolicyXml(
-                $result[2],
+                $result['certs'],
                 $anchor,
                 $policyId,
                 $enforcement,
-                associatedHostnames($result[0], $result[2][0]),
+                associatedHostnames($result['host'], $result['certs'][0]),
                 $includeHost
             );
         } catch (Throwable $ex) {
@@ -788,7 +553,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
 <?php if ($error): ?>
   <p class="error">Error: <?= $e($error) ?></p>
-<?php elseif ($result): [$host, $port, $certs, $ip] = $result; ?>
+<?php elseif ($result): ['host' => $host, 'port' => $port, 'certs' => $certs, 'ip' => $ip] = $result; ?>
   <h2><?= $e($host) ?>:<?= (int)$port ?> &mdash; <?= count($certs) ?> certificate(s)</h2>
   <?php if ($ip && $ip !== $host): ?>
     <p class="muted">Connected to <?= $e($ip) ?></p>

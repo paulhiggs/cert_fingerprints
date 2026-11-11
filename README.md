@@ -1,12 +1,12 @@
 # DVB-I SecurityPolicy Generator (`dvbi_securitypolicy.php`)
 
-A single-file PHP script that asks for a URL or hostname, connects to it over TLS, and reports the fingerprints of every certificate the server presents (the leaf certificate plus any intermediates).
+A PHP tool that asks for a URL or hostname, connects to it over TLS, and reports the fingerprints of every certificate the server presents (the leaf certificate plus any intermediates).
 
 It also generates a complete `SignaturePolicy` XML element, including its `TrustAnchor` and `SubjectConstraint`, that follows the syntax and semantics of **DVB A177r8, clause 7.6.2** (draft ETSI TS 103 770 V1.3.1).
 
-It runs from the command line or on a web server.
+It runs from the command line or on a web server. The certificate retrieval and fingerprinting code is in a separate library, `cert_lookup.php`, which other scripts can use on their own (see [Using the certificate API](#using-the-certificate-api-from-other-scripts)).
 
-`cert_fingerprints.php` is kept for backward compatibility. It loads `dvbi_securitypolicy.php`, so existing URLs and scripts keep working as long as both files are in the same directory.
+`cert_fingerprints.php` is kept for backward compatibility. It loads `dvbi_securitypolicy.php`, so existing URLs and scripts keep working as long as `cert_fingerprints.php`, `dvbi_securitypolicy.php` and `cert_lookup.php` are in the same directory.
 
 ## Features
 
@@ -75,7 +75,7 @@ If `--policy-id` is omitted, the placeholder `urn:example:signature-policy:<host
 
 ### Web server
 
-1. Upload `dvbi_securitypolicy.php` to any PHP-enabled web server.
+1. Upload `dvbi_securitypolicy.php` and `cert_lookup.php` to the same directory on any PHP-enabled web server.
 2. Open it in a browser.
 3. Enter a URL or hostname, choose the TrustAnchor CAs (and tick **Include host certificate** if you want the host's own certificate in the TrustAnchor too), tick the fingerprint algorithms you want (SHA-1, SHA-256, SHA-512 and SM3 are ticked by default; any your OpenSSL build lacks are greyed out), and click **Look up**.
 
@@ -189,9 +189,82 @@ Pinning the root-most CA is usually the most stable choice because intermediates
 
 `TrustAnchor` and `CAFingerprint` are mandatory (1 .. unbounded), so if the server sends only its leaf certificate, and that leaf is not self-signed, no valid `SignaturePolicy` can be built. The script says so instead of emitting an empty or invalid element. Many servers omit the root CA, but they normally send the intermediates, which are enough to produce a `TrustAnchor` with `--anchor=issuer`. If the server sends no CA certificate at all, `--include-host` lets you build a policy from the host certificate alone (see [Including the host certificate](#including-the-host-certificate)).
 
+## Using the certificate API from other scripts
+
+`cert_lookup.php` holds the code that fetches a server's certificate chain and fingerprints it. It only defines constants and functions, prints nothing, and has no side effects, so any PHP script can load it:
+
+```php
+require_once __DIR__ . '/cert_lookup.php';
+
+$result = lookup('example.com:8443', selectAlgorithms(['sha-256', 'sm3']));
+
+echo "{$result['host']}:{$result['port']}
+";
+foreach ($result['certs'] as $cert) {
+    echo "[{$cert['index']}] {$cert['subject']}
+";
+    foreach ($cert['anchor_fps'] as $algorithm => $fingerprint) {
+        echo "    $algorithm  $fingerprint
+";
+    }
+}
+```
+
+### `lookup(string $input, array $algorithms = DEFAULT_ALGORITHMS, array $options = []): array`
+
+Connects to `$input` (a hostname, `host:port` or URL; port 443 by default) and returns:
+
+| Key | Value |
+|---|---|
+| `host` | Host name (or IP address) parsed from `$input` |
+| `port` | Port number |
+| `ip` | Address connected to, or `null` if the host was not resolved first (see the options) |
+| `certs` | One array per certificate, leaf first (see below) |
+
+`$options`:
+
+| Option | Default | Effect |
+|---|---|---|
+| `allowed_ports` | `[]` (any port) | Reject any port not in this list |
+| `block_private` | `false` | Refuse hosts that resolve to private, loopback or reserved addresses |
+| `timeout` | `CONNECT_TIMEOUT` | Connection timeout in seconds |
+
+When `allowed_ports` or `block_private` is set, the host is resolved first and the connection goes to the checked address, so DNS cannot point it somewhere else between the check and the connection. **Set both whenever the host comes from someone you do not trust**, as the web page does.
+
+Each entry in `certs` contains:
+
+| Key | Value |
+|---|---|
+| `index` | Position in the chain; `0` is the server's own (leaf) certificate |
+| `subject`, `issuer` | Subject and issuer CN (or O if there is no CN) |
+| `cn_list` | All subject CNs |
+| `san_dns` | DNS names from `subjectAltName` |
+| `is_ca` | `true` if `basicConstraints` contains `CA:TRUE` |
+| `self_signed` | `true` if subject and issuer are identical |
+| `valid_from`, `valid_to` | Validity dates, `Y-m-d H:i:s UTC` |
+| `anchor_fps` | `[algorithm => 'AA:BB:...']` for each requested algorithm this OpenSSL build supports |
+
+`lookup()` throws `InvalidArgumentException` for bad input or a refused host or port, and `RuntimeException` if OpenSSL is missing or the DNS lookup or connection fails. As in the rest of the tool, certificate verification is disabled, so a result says nothing about whether a certificate is trusted.
+
+### Other functions
+
+| Function | Purpose |
+|---|---|
+| `selectAlgorithms(array $names): array` | Validate algorithm names (any case, or `all`); returns the supported ones and throws on an unknown name |
+| `isAlgorithmSupported(string $name): bool` | Whether this OpenSSL build supports an algorithm |
+| `parseTarget(string $input): array` | `[host, port]` from a hostname, `host:port` or URL |
+| `resolveHost(string $host): array` | IPv4 and IPv6 addresses of a host |
+| `isPublicIp(string $ip): bool` | `false` for private, loopback and reserved addresses |
+| `fetchCertChain(string $host, int $port, ?string $connectIp = null, int $timeout = CONNECT_TIMEOUT): array` | Raw OpenSSL certificates presented by the server |
+| `describeCert($cert, int $index, array $algorithms): array` | One `certs` entry, as above |
+| `anchorFingerprints($cert, array $algorithms): array` | Fingerprints of one certificate |
+| `colonHex(string $hex): string` | Format hex as `AA:BB:...` |
+
+To change `CONNECT_TIMEOUT`, `TRUST_ANCHOR_ALGORITHMS` or `DEFAULT_ALGORITHMS` for your script only, `define()` them before `require_once`; the library only sets constants that are not already defined. The functions are global (not namespaced), so check that their names do not clash with your own.
+
 ## Configuration
 
-Settings are constants at the top of the script.
+Settings are constants at the top of `dvbi_securitypolicy.php`, except `CONNECT_TIMEOUT`, `TRUST_ANCHOR_ALGORITHMS` and `DEFAULT_ALGORITHMS`, which are at the top of `cert_lookup.php`.
 
 | Constant | Default | Applies to | Description |
 |---|---|---|---|
@@ -228,8 +301,8 @@ CLI mode applies none of these restrictions, since it runs as you.
 
 1. The input is parsed into a host and port (default 443).
 2. *(Web mode)* The host is resolved and checked against the security rules.
-3. A TLS connection is opened with `capture_peer_cert_chain` enabled and verification disabled.
-4. Each certificate in the captured chain is parsed with `openssl_x509_parse()` and fingerprinted with `openssl_x509_fingerprint()`.
+3. *(`cert_lookup.php`)* A TLS connection is opened with `capture_peer_cert_chain` enabled and verification disabled.
+4. *(`cert_lookup.php`)* Each certificate in the captured chain is parsed with `openssl_x509_parse()` and fingerprinted with `openssl_x509_fingerprint()`.
 5. CA certificates (and, if requested, the host certificate) are selected from the chain and written as a `TrustAnchor` element.
 6. Associated hostnames are collected (entered host, CNAME chain, certificate names, reverse DNS) and written as the `SubjectConstraint`.
 7. Everything is wrapped in a `SignaturePolicy` element with the chosen `Enforcement` and `policyId`.
